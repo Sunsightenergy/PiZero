@@ -13,6 +13,11 @@ import os
 import json
 import subprocess
 import threading
+from dotenv import load_dotenv
+
+# Load env
+load_dotenv()
+insert_data_api = os.getenv('INSERT_DATA_API')
 
 # BME280 sensor address (default address)
 address = 0x76
@@ -93,29 +98,50 @@ def save_data_locally(data):
     with open(DATA_FILE, 'w') as f:
         json.dump(all_data, f, indent=4)
 
-def send_data(data, retries=3):
-    save_data_locally(data)
-    for _ in range(retries):
-        try:
-            response = requests.post('http://18.226.186.142/data', json=data)
-            print(response.text)
-            return
-        except requests.exceptions.RequestException as e:
-            print(f"Error sending data: {e}")
-            time.sleep(5)
-
-def send_image(image_path, retries=3):
+def send_data(data, image_path, retries=3):
+    """Combined function to send both data and image in a single request"""
     if image_path is None:
         print("No image to send.")
         return
+
     for _ in range(retries):
         try:
-            image_file = {'file': open(image_path, 'rb')}
-            response = requests.post('http://18.226.186.142/upload_image', files=image_file)
-            print(response.text)
+            # Prepare the multipart form data
+            files = {
+                'image': ('image.jpg', open(image_path, 'rb'), 'image/jpeg')
+            }
+            
+            # Prepare the data payload matching the new backend structure
+            data_payload = {
+                'temperature_c': data.get('temperature_c', 0),
+                'temperature_f': data.get('temperature_f', 0),
+                'humidity': data.get('humidity', 0),
+                'wind_speed': data.get('ambientWeatherWindSpeed', 0),
+                'wind_direction': data.get('ambientWeatherWindDirection', 0),
+                'timestamp': data.get('timestamp'),
+                'pressure': data.get('pressure', 0),
+                'ambientWeatherBatteryOk': data.get('ambientWeatherBatteryOk', False),
+                'ambientWeatherTemp': data.get('ambientWeatherTemp', 0),
+                'ambientWeatherHumidity': data.get('ambientWeatherHumidity', 0),
+                'ambientWeatherWindDirection': data.get('ambientWeatherWindDirection', 0),
+                'ambientWeatherWindSpeed': data.get('ambientWeatherWindSpeed', 0),
+                'ambientWeatherWindMaxSpeed': data.get('ambientWeatherWindMaxSpeed', 0),
+                'ambientWeatherRain': data.get('ambientWeatherRain', 0),
+                'ambientWeatherUV': data.get('ambientWeatherUV', 0),
+                'ambientWeatherUVI': data.get('ambientWeatherUVI', 0),
+                'ambientWeatherLightLux': data.get('ambientWeatherLightLux', 0)
+            }
+
+            # Send POST request with both data and image
+            response = requests.post(
+                insert_data_api,
+                files=files,
+                data=data_payload
+            )
+            print(f"Server response: {response.text}")
             return
         except requests.exceptions.RequestException as e:
-            print(f"Error sending image: {e}")
+            print(f"Error sending data and image: {e}")
             time.sleep(5)
 
 def fetch_weather_station_data():
@@ -134,21 +160,21 @@ def fetch_weather_station_data():
                 try:
                     weather_data = json.loads(last_line)
                     ambient_weather_data = {
-   			 "ambientWeatherTimestamp": weather_data.get('time'),
-   			 "ambientWeatherModel": weather_data.get('model'),
-   			 "ambientWeatherId": weather_data.get('id'),
-   			 "ambientWeatherBatteryOk": weather_data.get('battery_ok'),
-   			 "ambientWeatherTemp": weather_data.get('temperature_C'),
-   			 "ambientWeatherHumidity": weather_data.get('humidity'),
-   			 "ambientWeatherWindDirection": weather_data.get('wind_dir_deg'),
-   			 "ambientWeatherWindSpeed": weather_data.get('wind_avg_m_s'),
-   			 "ambientWeatherWindMaxSpeed": weather_data.get('wind_max_m_s'),
-   			 "ambientWeatherRain": weather_data.get('rain_mm'),
-   			 "ambientWeatherUV": weather_data.get('uv'),
-   			 "ambientWeatherUVI": weather_data.get('uvi'),
-   			 "ambientWeatherLightLux": weather_data.get('light_lux'),
-			 "ambientWeatherMIC": weather_data.get('mic')
-			}
+                         "ambientWeatherTimestamp": weather_data.get('time'),
+                         "ambientWeatherModel": weather_data.get('model'),
+                         "ambientWeatherId": weather_data.get('id'),
+                         "ambientWeatherBatteryOk": weather_data.get('battery_ok'),
+                         "ambientWeatherTemp": weather_data.get('temperature_C'),
+                         "ambientWeatherHumidity": weather_data.get('humidity'),
+                         "ambientWeatherWindDirection": weather_data.get('wind_dir_deg'),
+                         "ambientWeatherWindSpeed": weather_data.get('wind_avg_m_s'),
+                         "ambientWeatherWindMaxSpeed": weather_data.get('wind_max_m_s'),
+                         "ambientWeatherRain": weather_data.get('rain_mm'),
+                         "ambientWeatherUV": weather_data.get('uv'),
+                         "ambientWeatherUVI": weather_data.get('uvi'),
+                         "ambientWeatherLightLux": weather_data.get('light_lux'),
+                         "ambientWeatherMIC": weather_data.get('mic')
+                        }
                     print(f"Weather Station Data: {ambient_weather_data}")
                 except json.JSONDecodeError as e:
                     print(f"Error decoding JSON: {e}")
@@ -156,9 +182,9 @@ def fetch_weather_station_data():
     except Exception as e:
         print(f"Error fetching weather station data: {e}")
 
+# Modify the main loop
 if __name__ == "__main__":
-    last_data_send_time = time.time()
-    last_image_send_time = time.time()
+    last_send_time = time.time()
 
     # Start fetching weather station data in a separate thread
     weather_thread = threading.Thread(target=fetch_weather_station_data)
@@ -180,10 +206,13 @@ if __name__ == "__main__":
 
         current_time = time.time()
 
-        # Send data every 1 minute
-        if current_time - last_data_send_time >= (1 * 60):
+        # Send data and image every 1 minute
+        if current_time - last_send_time >= 60:
             try:
-                # Combine sensor data and ambient weather data
+                # Take new image
+                image_path = take_image()
+                
+                # Prepare data payload
                 data = {
                     "temperature_c": temperature_c,
                     "temperature_f": temperature_f,
@@ -192,18 +221,11 @@ if __name__ == "__main__":
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     **ambient_weather_data
                 }
-                send_data(data)
-                last_data_send_time = current_time
-            except Exception as e:
-                print(f"Error in sending data: {e}")
 
-        # Send image every 1 minute
-        if picam2 and current_time - last_image_send_time >= (1 * 60):
-            try:
-                image_path = take_image()
-                send_image(image_path)
-                last_image_send_time = current_time
+                # Send both data and image in a single request
+                send_data(data, image_path)
+                last_send_time = current_time
             except Exception as e:
-                print(f"Error in capturing or sending image: {e}")
+                print(f"Error in sending data and image: {e}")
             
         time.sleep(5)

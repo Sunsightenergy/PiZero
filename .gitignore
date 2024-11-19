@@ -1,0 +1,8 @@
+rtl_433/
+images/
+data/
+.env 
+env/
+venv.
+*.log
+
